@@ -9,6 +9,8 @@ class LogStash::Outputs::Cassandra < LogStash::Outputs::Base
   config_name "cassandra"
   plugin_status "experimental"
 
+  config :cluster, :validate => :string, :default => "logstash"
+
   # A list of nodes and ports in the cluster for our driver to connect to. 
   config :nodes, :validate => :hash, :default => {"localhost" => "9160"}
 
@@ -30,64 +32,63 @@ class LogStash::Outputs::Cassandra < LogStash::Outputs::Base
   #   CREATE COLUMNFAMILY logstash_timeline (id text primary key) WITH comparator=uuid;
   config :index_tables, :validate => :hash
 
+  config :astyanax, :validate => :string
+
   public
   def register
-    require 'cassandra-cql'
+    require 'java'
+    require @astyanax
+    require 'logstash/util/cassandra'
+
     cluster_nodes = @nodes.map { |node, port| "#{node}:#{port}" }
 
     @logger.info("Cluster nodes", :nodes => cluster_nodes)
+    @column_families = {
+      @table.to_sym => Cassandra.column_family(@table, Cassandra::TimeUUIDSerializer.get, Cassandra::StringSerializer.get),
+    }
 
-    @client = CassandraCQL::Database.new(cluster_nodes, {:keyspace => @keyspace, :cql_version => 3})
+    @index_table_keys = {}
 
     @index_tables ||= {}
-
-    # sanity check.
-    ([@table] + @index_tables.keys).each do |t|
-      raise "Can't register Cassandra output handler - columnfamily #{t} doesn't exist!" unless @client.schema.column_families.include?(t)
+    @index_tables.each do |table_name, key_template|
+      cf = Cassandra.column_family(table_name, Cassandra::StringSerializer.get, Cassandra::TimeUUIDSerializer.get)
+      @column_families[table_name.to_sym] = cf
+      @index_table_keys[cf] = key_template
     end
 
-    # Pre-format some values for the CQL statements. Just string manipulation, but since receive gets called on every event, we 
-    # want to do the repetitive parts up-front here as the tiny CPU in aggregate adds up to unnecessary load.
-    @columns = @event_schema.keys
-    @columns_cql_clause = @columns.join(',')
-    @column_mappings = @columns.map { |c| @event_schema[c] }.map { |c| "%{#{c}}" }
-    @column_mappings_placeholder = (["?"]*@columns.size).join(',')
-    @log_insert_query = "INSERT INTO #{@table} (id,#{@columns_cql_clause}) VALUES (?,#{@column_mappings_placeholder})"
+    @schema = {}
+    @event_schema.each do |target_col, source_col|
+      key, type = target_col.split(':')
+      @schema[key.to_sym] = type
+    end
 
-    @logger.debug("Will map #{@columns_cql_clause} to #{@column_mappings_cql_clause}")
+    @column_mappings = {}
+    @event_schema.each do |target_col, source_col|
+      key, type = target_col.split(':')
+      @column_mappings[key.to_sym] = source_col
+    end
+
+    @client = Cassandra.new(@column_families, @schema, Cassandra.connect(@cluster_name, @keyspace, cluster_nodes))
   end # def register
-
-  protected
-  def timestamp_as_uuid(event)
-    if RUBY_ENGINE != "jruby"
-      event.ruby_timestamp
-    else
-      Time.at((event.ruby_timestamp.getMillis.to_f/1000).to_i)
-    end
-  end
 
   public
   def receive(event)
     return unless output?(event)
 
-    # Generate a type 1 UUID for this event.
-    event_uuid = CassandraCQL::UUID.new(self.timestamp_as_uuid(event))
+    index_keys = {}
+    @index_table_keys.each do |cf, tmpl|
+      index_keys[cf] = event.sprintf(tmpl)
+    end
 
-    # Write the event itself. Unfortunately, maintaining the event and index tables don't happen as one atomic transaction; every update is separate.
-    column_values = @column_mappings.map do |i|
-      if i.eql?('%{@timestamp}')
-        self.timestamp_as_uuid(event)
+    row = {}
+    @column_mappings.each do |target, src|
+      if target.eql?(:ts)
+        row[target] = event.parsed_timestamp
       else
-        event.sprintf(i)
+        row[target] = event[src]
       end
     end
-    # @logger.info(log_insert_query)
-    @client.execute(@log_insert_query, event_uuid, *column_values)
 
-    # Write index maintenance wide columns.
-    @index_tables.each do |tbl, id_key|
-      timeline_insert_query = "INSERT INTO #{tbl} (id,?) VALUES (?,?)"
-      @client.execute(timeline_insert_query, event_uuid, event.sprintf(id_key), '')
-    end
+    @client.write_logs_row(row, index_keys)
   end # def receive
 end # class LogStash::Outputs::Cassandra
