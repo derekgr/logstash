@@ -1,3 +1,4 @@
+$:.push File.expand_path("../../lib", __FILE__)
 require "logstash/outputs/base"
 require "logstash/namespace"
 
@@ -38,7 +39,9 @@ class LogStash::Outputs::Cassandra < LogStash::Outputs::Base
   def register
     require 'java'
     require @astyanax
-    require 'logstash/util/cassandra'
+    require 'github/cassandra'
+
+    @@date_parser ||= Java::org.joda.time.format.ISODateTimeFormat.dateTimeParser.withOffsetParsed
 
     cluster_nodes = @nodes.map { |node, port| "#{node}:#{port}" }
 
@@ -83,7 +86,7 @@ class LogStash::Outputs::Cassandra < LogStash::Outputs::Base
     row = {}
     @column_mappings.each do |target, src|
       if target.eql?(:ts)
-        row[target] = event.parsed_timestamp
+        row[target] = @@date_parser.parseDateTime(event["@timestamp"])
       else
         row[target] = event[src]
       end

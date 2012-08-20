@@ -71,24 +71,24 @@ class LogStash::Event
   def unix_timestamp
     if RUBY_ENGINE != "jruby"
       # This is really slow. See LOGSTASH-217
-      return self.parsed_timestamp.to_f
+      return self.ruby_timestamp.to_f
     else
-      return self.parsed_timestamp.getMillis.to_f / 1000
+      return self.ruby_timestamp.getMillis.to_f / 1000
     end
   end
 
   public
-  def parsed_timestamp
-    if @parsed_timestamp.nil?
+  def ruby_timestamp
+    if @ruby_timestamp.nil?
       if RUBY_ENGINE != "jruby"
         # This is really slow. See LOGSTASH-217
-        @parsed_timestamp = Time.parse(timestamp)
+        @ruby_timestamp = Time.parse(timestamp)
       else
-        @parsed_timestamp = @@date_parser.parseDateTime(timestamp)
+        @ruby_timestamp = @@date_parser.parseDateTime(timestamp)
       end
     end
 
-    @parsed_timestamp
+    @ruby_timestamp
   end
 
   public
@@ -221,7 +221,7 @@ class LogStash::Event
           raise Exception.new("LogStash::Event#sprintf('+%s') is not " \
                               "supported yet in this version of ruby")
         end
-        datetime = self.parsed_timestamp
+        datetime = @@date_parser.parseDateTime(self.timestamp)
         (datetime.getMillis / 1000).to_i
       elsif key[0,1] == "+"
         # We got a %{+TIMEFORMAT} so use joda to format it.
@@ -230,7 +230,7 @@ class LogStash::Event
           raise Exception.new("LogStash::Event#sprintf('+dateformat') is not " \
                               "supported yet in this version of ruby")
         end
-        datetime = self.parsed_timestamp
+        datetime = @@date_parser.parseDateTime(self.timestamp)
         format = key[1 .. -1]
         datetime.toString(format) # return requested time format
       else

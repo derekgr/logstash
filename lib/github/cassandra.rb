@@ -1,16 +1,6 @@
 require 'java'
 
 class Cassandra
-  LOGS = {
-    :ip => 'string',
-    :query => 'string',
-    :status => 'int',
-    :ts => 'timestamp',
-    :user => 'string',
-    :useragent => 'string',
-    :verb => 'string'
-  }
-
   attr_reader :client, :column_families
   attr_writer :schema
 
@@ -54,8 +44,10 @@ class Cassandra
       raise "Ill-formed log insertion: no row #{k.to_s} in event (#{row.inspect})!" unless row.include?(k)
       if k.eql?(:ts)
         mutation.putColumn(k.to_s, row_key.getMillis, nil)
+      elsif v.eql?('int')
+        mutation.putColumn(k.to_s, row[k].first.to_i, nil)
       else
-        mutation.putColumn(k.to_s, row[k], nil)
+        mutation.putColumn(k.to_s, row[k].first, nil)
       end
     end
 
